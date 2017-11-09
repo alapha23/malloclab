@@ -52,15 +52,33 @@
 
 /*
  * mm_init - initialize the malloc package.
+ * 	Allocating initial heap area, 64M at beginning 	
+ * 	return -1 if there is a problem, 0 otherwise
  */
 int mm_init(void)
 {
+  // alloc 64M
+  mm_malloc(67108864);
+
   return 0;
+}
+
+/*
+ * mm_exit - treat memory leak
+ * 	free all unfreed memory blocks
+ */
+int mm_exit(void)
+{
+
 }
 
 /*
  * mm_malloc - Allocate a block by incrementing the brk pointer.
  *     Always allocate a block whose size is a multiple of the alignment.
+ *     * maintain alignment
+ *     * find the suitable place
+ *     * place the block
+ *     * extend the heap if not enough space
  */
 void *mm_malloc(size_t size)
 {
@@ -104,8 +122,17 @@ void *mm_realloc(void *ptr, size_t size)
 
 /*
  * mm_check - Does not currently check anything
+ * 	is every block marked as free?
+ * 	is contiguous free blocks escaped coalescing?
+ * 	is every free block in the free list?
+ * 	do allocted blocks overlap?
+ * 	do pointers in the heap block point to valid heap address?
+ *	return nonzero if heap is consistent
  */
 static int mm_check(void)
 {
   return 1;
 }
+
+
+
