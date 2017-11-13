@@ -23,6 +23,10 @@
 #define CHUNKSIZE  (1<<12)  /* initial heap size (bytes) */
 #define OVERHEAD  8   /* overhead of header and footer (bytes) */
 
+#define IMPLICIT_LIST 1
+#define EXPLICIT_LIST 0
+#define DEBUG 0
+
 #define MAX(x, y) ((x) > (y)? (x) : (y))
 
 /* Pack a size and allocated bit into a word */
@@ -50,6 +54,108 @@
 
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
+//static unsigned int extend_cnt = 0;
+static char* freeptr;
+static char* allocptr;
+
+/*
+ * coalesce: merge free blocks
+ *
+ */
+static void *coalesce(void *brk)
+{
+
+printf("coalesce is called\n");
+#if IMPLICIT_LIST == 1
+  /* Is the previous block allocated?  */
+  size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(brk))); 
+  /* Is the next block allocated?  */
+  size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(brk)));
+  /* the size of the current block */
+  size_t size = GET_SIZE(HDRP(brk));
+
+  if(prev_alloc && next_alloc)
+    return brk;
+  else if(prev_alloc && !next_alloc)
+  {
+  /* size is total size of current and next block*/
+    size += GET_SIZE(HDRP(NEXT_BLKP(brk)));
+  /* create header and footer */
+    PUT(HDRP(brk), PACK(size, 0));
+    PUT(FTRP(brk), PACK(size, 0));
+    return (brk);
+  }
+  else if( !prev_alloc && next_alloc )
+  {
+    /* current + prev */
+    size += GET_SIZE(HDRP(PREV_BLKP(brk)));
+    PUT(FTRP(brk), PACK(size, 0));
+    PUT(HDRP(PREV_BLKP(brk)), PACK(size, 0));
+    /* return previous block ptr as the current one is merged*/
+    return (PREV_BLKP(brk));
+  }
+  else
+  {
+    /* both prev and next blocks are free */
+    size += GET_SIZE(HDRP(PREV_BLKP(brk))) + GET_SIZE(FTRP(NEXT_BLKP(brk)));
+    PUT(FTRP(NEXT_BLKP(brk)), PACK(size, 0));
+    PUT(HDRP(PREV_BLKP(brk)), PACK(size, 0));
+    return (PREV_BLKP(brk));
+  }
+#else 
+  return brk;
+#endif
+}
+
+/*
+ * extend_heap: extend the heap by calling mem_sbrk
+ */
+
+static void *extend_heap(size_t words)
+{
+  char *oldbrk;
+  size_t newsize = (words % 2) ? (words+1) * WSIZE : words * WSIZE;
+  if((int)(oldbrk = mem_sbrk(newsize)) < 0)
+    return NULL;
+
+  /* Initialize free block header and footer and epilogue header*/
+  PUT(HDRP(oldbrk), PACK(newsize, 0));	/* the new free block header */
+  PUT(FTRP(oldbrk), PACK(newsize, 0));  /* free block footer */
+  PUT(HDRP(NEXT_BLKP(oldbrk)), PACK(0, 1));
+
+
+  /* coalesce if the previous block was free */
+  return coalesce(oldbrk);
+}
+
+
+
+static void *find_fit(size_t newsize)
+{
+  #if IMPLICIT_LIST == 1
+	void *brk;
+
+	for(brk = mem_heap_lo(); GET_SIZE(HDRP(brk)) > 0; brk = NEXT_BLKP(brk))
+	{
+	  if(!GET_ALLOC(HDRP(brk)) && (newsize <= GET_SIZE(HDRP(brk))))
+	    return brk;
+	}
+	return NULL;
+  #endif
+  return NULL;
+}
+
+
+
+static void place(void *brk, size_t asize)
+{
+  size_t csize = GET_SIZE(HDRP(brk));
+
+  PUT(HDRP(brk), PACK(csize, 1));
+  PUT(FTRP(brk), PACK(csize, 1));
+}
+
+
 /*
  * mm_init - initialize the malloc package.
  * 	Allocating initial heap area, 64M at beginning 	
@@ -57,10 +163,39 @@
  */
 int mm_init(void)
 {
-  // alloc 64M
-  mm_malloc(67108864);
-
+#if DEBUG == 1
+  // allocate 2 megabyte
+  void * allocptr = mem_sbrk(2 *(1<<20));
+  //  max heap is 20M
+  PUT(allocptr, 0);
+  // create prologue
+  PUT(allocptr+WSIZE, PACK(OVERHEAD, 1));
+  PUT(allocptr+DSIZE, PACK(OVERHEAD, 1));
+  allocptr += DSIZE;
+//  freeptr = allocptr; // free is not implemented
+// need implement a macro IS_FREE
+  // create epilogue header
+  PUT(allocptr+WSIZE, PACK(0, 1)); 
   return 0;
+#endif
+
+
+#if IMPLICIT_LIST == 1
+  allocptr = mem_sbrk(4 * WSIZE);
+  PUT(allocptr, 0);
+  // create prologue
+  PUT(allocptr+WSIZE, PACK(OVERHEAD, 1));
+  PUT(allocptr+DSIZE, PACK(OVERHEAD, 1));
+  allocptr += DSIZE;
+  freeptr = allocptr; // free is not implemented
+// need implement a macro IS_FREE
+  // create epilogue header
+  PUT(allocptr+WSIZE, PACK(0, 1));  
+//  if(extend_heap(CHUNKSIZE/WSIZE) == NULL )
+//    return -1;
+  return 0;
+#endif 
+
 }
 
 /*
@@ -69,7 +204,9 @@ int mm_init(void)
  */
 int mm_exit(void)
 {
-
+  mem_reset_brk();
+  mem_deinit();
+  return 1;
 }
 
 /*
@@ -82,14 +219,64 @@ int mm_exit(void)
  */
 void *mm_malloc(size_t size)
 {
-  int newsize = ALIGN(size + SIZE_T_SIZE);
-  void *p = mem_sbrk(newsize);
-  if (p == (void *)-1)
+#if DEBUG == 1
+  size_t newsize = ALIGN(size + DSIZE);
+  
+  
+  void * brk = mem_sbrk(newsize);
+  if( brk == (void * )-1)
     return NULL;
-  else {
-    *(size_t *)p = size;
-    return (void *)((char *)p + SIZE_T_SIZE);
+  else
+  {
+  *(size_t *)brk = size;
+  return (void*)((char *)brk + SIZE_T_SIZE);
   }
+#endif
+
+#if IMPLICIT_LIST == 1
+  assert( size > 0);
+  // maintain alignment
+  // new size according to double word alignment
+  // we add a DSIZE as header and footer is needed
+  size_t newsize = ALIGN(size + DSIZE);
+  size_t extendsize;
+
+  // do i need to extend?
+  extend_heap(newsize / WSIZE);
+ return NULL; 
+  // add a block
+  
+/*  if( allocptr = (char *)(find_fit(newsize)) !=NULL)
+  {
+    place(allocptr, newsize);
+    return allocptr;
+  }
+
+  extendsize = MAX(newsize, CHUNKSIZE);
+  if((allocptr = (char *)(extend_heap(extendsize/WSIZE)) == NULL))
+    return NULL;
+  place(allocptr, newsize);
+  return allocptr;*/
+
+#endif
+
+// find next suitable place
+//  while(GET_ALLOC(freeptr))
+//  allocptr =(char *);  
+//  mem_sbrk is used to extend the heap
+//  we should not extend the heap normally
+//  mem_sbrk(newsize);
+// check heap rest space
+/*  while (allocptr == (void *)-1)
+  { 
+  //every time we extend the heap, we extend size two times as previous extend size
+    mem_sbrk(CHUNKSIZE>>(extend_cnt++));    
+    allocptr = mem_sbrk(newsize);
+  }
+
+    allocptr += GET_SIZE(HDPT(allocptr))
+    *(size_t *)allocptr =;
+    return (void *)((char *)p + SIZE_T_SIZE);*/
  }
 
 
@@ -98,6 +285,14 @@ void *mm_malloc(size_t size)
  */
 void mm_free(void *ptr)
 {
+
+#if IMPLICIT_LIST == 1
+  size_t size = GET_SIZE(HDRP(brk));
+
+  PUT(HDRP(brk), PACK(size, 0));
+  PUT(FTRP(brk), PACK(size, 0));
+  coalesce(brk);
+#endif
 }
 
 /*
@@ -133,6 +328,4 @@ static int mm_check(void)
 {
   return 1;
 }
-
-
 
