@@ -20,12 +20,13 @@
 
 #define WSIZE   4   /* word size (bytes) */
 #define DSIZE   8   /* doubleword size (bytes) */
-#define CHUNKSIZE  (1<<12)  /* initial heap size (bytes) */
+#define CHUNKSIZE  (1<<13)  
 #define OVERHEAD  8   /* overhead of header and footer (bytes) */
 
-#define IMPLICIT_LIST 1
+/* choose a mode */
+#define IMPLICIT_LIST 0
 #define EXPLICIT_LIST 0
-#define DEBUG 0
+#define DEBUG 1
 
 #define MAX(x, y) ((x) > (y)? (x) : (y))
 
@@ -58,14 +59,40 @@
 static char* freeptr;
 static char* allocptr;
 
+// CONVENTION: ptr to a free block points to header+4bytes just as unfreed block
+
+/*
+ * delete_node: delete a node from the free list
+ *
+ */
+
+static void delete_node(char *brk)
+{
+  assert(brk != NULL);
+  char * prev_addr = *brk;
+  *(prev_addr) = brk + WSIZE;
+}
+
+static void add_node(char *brk)
+{
+  assert(brk != NULL);
+  /* prev is not changed */
+  /* next is brk */
+  *(freeptr+WSIZE) = brk;
+  /* brk's prev is old freeptr*/
+  *brk = freeptr;
+  /* brk's next is unknown*/
+  *(brk+WSIZE) = (void*)-1;
+  /* advance freeptr to brk */
+  freeptr = brk;
+}
+
 /*
  * coalesce: merge free blocks
  *
  */
-static void *coalesce(void *brk)
+static void *coalesce(char *brk)
 {
-
-printf("coalesce is called\n");
 #if IMPLICIT_LIST == 1
   /* Is the previous block allocated?  */
   size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(brk))); 
@@ -73,9 +100,96 @@ printf("coalesce is called\n");
   size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(brk)));
   /* the size of the current block */
   size_t size = GET_SIZE(HDRP(brk));
-
   if(prev_alloc && next_alloc)
+  {
     return brk;
+  }
+  else if(prev_alloc && !next_alloc)
+  {
+  /* size is total size of current and next block*/
+    size += GET_SIZE(HDRP(NEXT_BLKP(brk)));    
+  /* create header and footer */  
+    PUT(HDRP(brk), PACK(size, 0));    
+    PUT(FTRP(brk), PACK(size, 0));
+    return (brk);
+  }
+  else if( !prev_alloc && next_alloc )
+  {
+    /* current + prev */
+    size += GET_SIZE(HDRP(PREV_BLKP(brk)));
+    PUT(HDRP(PREV_BLKP(brk)), PACK(size, 0));
+    PUT(FTRP(brk), PACK(size, 0));
+    /* return previous block ptr as the current one is merged*/
+    return (PREV_BLKP(brk));
+  }
+  else
+  {
+    /* both prev and next blocks are free */
+    size += GET_SIZE(HDRP(PREV_BLKP(brk))) + GET_SIZE(FTRP(NEXT_BLKP(brk)));
+    PUT(HDRP(PREV_BLKP(brk)), PACK(size, 0));
+    PUT(FTRP(NEXT_BLKP(brk)), PACK(size, 0));
+    return (PREV_BLKP(brk));
+  }
+#endif
+#if EXPLICIT_LIST == 1
+  /* Is the previous block allocated?  */
+  size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(brk))); 
+  /* Is the next block allocated?  */
+  size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(brk)));
+  /* the size of the current block */
+  size_t size = GET_SIZE(HDRP(brk));
+  if(prev_alloc && next_alloc)
+  {
+    return brk;
+  }
+  else if(prev_alloc && !next_alloc)
+  {
+  /* size is total size of current and next block*/
+    size += GET_SIZE(HDRP(NEXT_BLKP(brk)));
+  /* create header and footer */
+    PUT(HDRP(brk), PACK(size, 0));
+    PUT(FTRP(brk), PACK(size, 0));
+  /* delete next node from free list*/
+    delete_node(NEXT_BLKP(brk));
+    return (brk);
+  }
+  else if( !prev_alloc && next_alloc )
+  {
+    /* current + prev */
+    size += GET_SIZE(HDRP(PREV_BLKP(brk)));
+    PUT(HDRP(PREV_BLKP(brk)), PACK(size, 0));
+    PUT(FTRP(brk), PACK(size, 0));
+    /* delete current node from free list*/
+    delete_node(brk);
+    /* return previous block ptr as the current one is merged*/
+    return (PREV_BLKP(brk));
+  }
+  else
+  {
+    /* both prev and next blocks are free */
+    size += GET_SIZE(HDRP(PREV_BLKP(brk))) + GET_SIZE(FTRP(NEXT_BLKP(brk)));
+    PUT(HDRP(PREV_BLKP(brk)), PACK(size, 0));
+    PUT(FTRP(NEXT_BLKP(brk)), PACK(size, 0));
+    /* delete */
+    delete_node(NEXT_BLKP(brk));
+    delete_node(brk);
+
+    return (PREV_BLKP(brk));
+  }
+#endif
+#if DEBUG == 1
+  /* Is the previous block allocated?  */
+  size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(brk))); 
+  /* Is the next block allocated?  */
+  size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(brk)));
+  /* the size of the current block */
+  size_t size = GET_SIZE(HDRP(brk));
+printf("prev_alloc=%d, next_alloc=%d\n", prev_alloc, next_alloc);
+  if(prev_alloc && next_alloc)
+  {
+    printf("No merging happened, return brk = %p\n", brk);
+    return brk;
+  }
   else if(prev_alloc && !next_alloc)
   {
   /* size is total size of current and next block*/
@@ -89,70 +203,138 @@ printf("coalesce is called\n");
   {
     /* current + prev */
     size += GET_SIZE(HDRP(PREV_BLKP(brk)));
-    PUT(FTRP(brk), PACK(size, 0));
     PUT(HDRP(PREV_BLKP(brk)), PACK(size, 0));
-    /* return previous block ptr as the current one is merged*/
+    PUT(FTRP(brk), PACK(size, 0));
+      /* return previous block ptr as the current one is merged*/
     return (PREV_BLKP(brk));
   }
   else
   {
     /* both prev and next blocks are free */
     size += GET_SIZE(HDRP(PREV_BLKP(brk))) + GET_SIZE(FTRP(NEXT_BLKP(brk)));
-    PUT(FTRP(NEXT_BLKP(brk)), PACK(size, 0));
     PUT(HDRP(PREV_BLKP(brk)), PACK(size, 0));
+    PUT(FTRP(NEXT_BLKP(brk)), PACK(size, 0));
     return (PREV_BLKP(brk));
   }
-#else 
-  return brk;
 #endif
+
 }
 
 /*
  * extend_heap: extend the heap by calling mem_sbrk
  */
-
-static void *extend_heap(size_t words)
+static char *extend_heap(size_t words)
 {
+#if IMPLICIT_LIST == 1
   char *oldbrk;
   size_t newsize = (words % 2) ? (words+1) * WSIZE : words * WSIZE;
-  if((int)(oldbrk = mem_sbrk(newsize)) < 0)
+  if((int)(oldbrk = mem_sbrk(newsize)) == (void*)-1 )
+  {
     return NULL;
+  }
+  PUT(HDRP(oldbrk), PACK(newsize, 0));	/* the new free block header */
+  PUT(FTRP(oldbrk), PACK(newsize, 0));  /* free block footer */
+  PUT(HDRP(NEXT_BLKP(oldbrk)), PACK(0, 1)); /* add eqilogue */
+  /* coalesce if the previous block was free */
+  return coalesce(oldbrk);
+#endif
+#if EXPLICIT_LIST == 1
+  char *oldbrk;
+  size_t newsize = (words % 2) ? (words+1) * WSIZE : words * WSIZE;
+  if((int)(oldbrk = mem_sbrk(newsize)) == (void*)-1 )
+  {
+    return NULL;
+  }
+  PUT(HDRP(oldbrk), PACK(newsize, 0));	/* the new free block header */
+  PUT(FTRP(oldbrk), PACK(newsize, 0));  /* free block footer */
+  PUT(HDRP(NEXT_BLKP(oldbrk)), PACK(0, 1)); /* add eqilogue */
+  /* coalesce if the previous block was free */
+  add_node(oldbrk);
+  return coalesce(oldbrk);
+#endif
+#if DEBUG == 1
+  char *oldbrk;
+  size_t newsize = (words % 2) ? (words+1) * WSIZE : words * WSIZE;
+  if((int)(oldbrk = mem_sbrk(newsize)) == (void*)-1 )
+  {
+    printf("mem_sbrk in extend_heap failed at%p\n", oldbrk);
+    return NULL;
+  }
 
   /* Initialize free block header and footer and epilogue header*/
   PUT(HDRP(oldbrk), PACK(newsize, 0));	/* the new free block header */
   PUT(FTRP(oldbrk), PACK(newsize, 0));  /* free block footer */
-  PUT(HDRP(NEXT_BLKP(oldbrk)), PACK(0, 1));
-
+  PUT(HDRP(NEXT_BLKP(oldbrk)), PACK(0, 1)); /* add eqilogue */
+  printf("extended heap with old brk %p \n", oldbrk);
 
   /* coalesce if the previous block was free */
   return coalesce(oldbrk);
+
+
+#endif
 }
 
 
-
-static void *find_fit(size_t newsize)
+static char *find_fit(size_t newsize)
 {
   #if IMPLICIT_LIST == 1
-	void *brk;
+	char *brk;
 
-	for(brk = mem_heap_lo(); GET_SIZE(HDRP(brk)) > 0; brk = NEXT_BLKP(brk))
+	for(brk = mem_heap_lo() + DSIZE; GET_SIZE(HDRP(brk)) > 0; brk = NEXT_BLKP(brk))
 	{
 	  if(!GET_ALLOC(HDRP(brk)) && (newsize <= GET_SIZE(HDRP(brk))))
 	    return brk;
 	}
 	return NULL;
   #endif
-  return NULL;
+  #if EXPLICIT_LIST == 1
+	char *brk;
+
+	for(brk = freeptr; *(brk) != (void*)-1; brk = *(brk))
+	{
+	  if(newsize <= GET_SIZE(HDRP(brk)))
+	    return brk;
+	}
+	return NULL;
+  #endif
+  #if DEBUG == 1
+	char *brk;
+
+	for(brk = mem_heap_lo() + DSIZE; GET_SIZE(HDRP(brk)) > 0; brk = NEXT_BLKP(brk))
+	{
+	  if(!GET_ALLOC(HDRP(brk)) && (newsize <= GET_SIZE(HDRP(brk))))
+	    return brk;
+	  printf("Searching blocks at %p\n", brk);
+	}
+	return NULL;
+  #endif
+
 }
 
 
 
 static void place(void *brk, size_t asize)
 {
+  /* csize: free block size*/
   size_t csize = GET_SIZE(HDRP(brk));
-
-  PUT(HDRP(brk), PACK(csize, 1));
-  PUT(FTRP(brk), PACK(csize, 1));
+ 
+  if((csize - asize) >= (DSIZE + OVERHEAD))
+  {
+    /* free block is more than double word larger than asize so we split the block*/
+    /* header and footer*/
+    PUT(HDRP(brk), PACK(asize, 1));
+    PUT(FTRP(brk), PACK(asize, 1));
+    brk = NEXT_BLKP(brk);
+    /* split: put rest free space in the block into headers and footers*/
+    PUT(HDRP(brk), PACK(csize-asize, 0));
+    PUT(FTRP(brk), PACK(csize-asize, 0));
+  }else
+  {
+    /* just a little bit larger. so we treat the tiny waste as a padding */
+    PUT(HDRP(brk), PACK(csize, 1));
+    PUT(FTRP(brk), PACK(csize, 1));
+    brk += csize;
+  }
 }
 
 
@@ -165,7 +347,8 @@ int mm_init(void)
 {
 #if DEBUG == 1
   // allocate 2 megabyte
-  void * allocptr = mem_sbrk(2 *(1<<20));
+  allocptr = mem_sbrk(2 *(1<<20));
+  printf("init allocptr %p\n", allocptr);
   //  max heap is 20M
   PUT(allocptr, 0);
   // create prologue
@@ -176,9 +359,24 @@ int mm_init(void)
 // need implement a macro IS_FREE
   // create epilogue header
   PUT(allocptr+WSIZE, PACK(0, 1)); 
+//  extend_heap(CHUNKSIZE/WSIZE);
   return 0;
 #endif
-
+#if EXPLICIT_LIST == 1
+  allocptr = mem_sbrk(4 * WSIZE);
+  PUT(allocptr, 0);
+  // create prologue
+  PUT(allocptr+WSIZE, PACK(OVERHEAD, 1));
+  PUT(allocptr+DSIZE, PACK(OVERHEAD, 1));
+  allocptr += DSIZE;
+// freeptr = allocptr; // free is not implemented
+// need implement a macro IS_FREE
+  // create epilogue header
+  PUT(allocptr+WSIZE, PACK(0, 1));  
+//  if(extend_heap(CHUNKSIZE/WSIZE) == NULL )
+//    return -1;
+  return 0;
+#endif 
 
 #if IMPLICIT_LIST == 1
   allocptr = mem_sbrk(4 * WSIZE);
@@ -187,7 +385,7 @@ int mm_init(void)
   PUT(allocptr+WSIZE, PACK(OVERHEAD, 1));
   PUT(allocptr+DSIZE, PACK(OVERHEAD, 1));
   allocptr += DSIZE;
-  freeptr = allocptr; // free is not implemented
+// freeptr = allocptr; // free is not implemented
 // need implement a macro IS_FREE
   // create epilogue header
   PUT(allocptr+WSIZE, PACK(0, 1));  
@@ -219,7 +417,7 @@ int mm_exit(void)
  */
 void *mm_malloc(size_t size)
 {
-#if DEBUG == 1
+#ifdef NAIVE
   size_t newsize = ALIGN(size + DSIZE);
   
   
@@ -232,6 +430,63 @@ void *mm_malloc(size_t size)
   return (void*)((char *)brk + SIZE_T_SIZE);
   }
 #endif
+#if DEBUG == 1
+  assert( size > 0);
+  // maintain alignment
+  // new size according to double word alignment
+  // we add a DSIZE as header and footer is needed
+  size_t newsize = ALIGN(size + DSIZE);
+  size_t extendsize;
+
+  // do i need to extend?
+  if( (allocptr = find_fit(newsize)) != NULL) 
+  {
+    printf("\nfound a fit block%p\n", allocptr);
+    place(allocptr, newsize);
+    printf("after place function\n");
+    return allocptr;
+  }
+  else 
+    printf("\n\nfind fit failed\n");
+  
+  // every time heap is used up, we extend it by CHUNKSIZE or required block size
+  extendsize = MAX(newsize, CHUNKSIZE);
+  if((allocptr = extend_heap(extendsize/WSIZE)) == NULL)
+  {
+    printf("Extend heap failed\n");
+    return NULL;
+  }
+  printf("after extend_heap, allocptr = %p\n", allocptr);
+  printf("place a %d sized block at allocptr\n", newsize);
+  place(allocptr, newsize);
+  return allocptr;
+
+#endif
+#if EXPLICIT_LIST == 1
+  assert( size > 0);
+  // maintain alignment
+  // new size according to double word alignment
+  // we add a DSIZE as header and footer is needed
+  size_t newsize = ALIGN(size + DSIZE);
+  size_t extendsize;
+
+  // do i need to extend?
+  if( (allocptr = find_fit(newsize)) != NULL) 
+  {
+    place(allocptr, newsize);
+    return allocptr;
+  }
+  
+  // every time heap is used up, we extend it by CHUNKSIZE or required block size
+  extendsize = MAX(newsize, CHUNKSIZE);
+  if((allocptr = extend_heap(extendsize/WSIZE)) == NULL)
+  {
+    return NULL;
+  }
+  place(allocptr, newsize);
+  return allocptr;
+#endif
+
 
 #if IMPLICIT_LIST == 1
   assert( size > 0);
@@ -242,42 +497,23 @@ void *mm_malloc(size_t size)
   size_t extendsize;
 
   // do i need to extend?
-  extend_heap(newsize / WSIZE);
- return NULL; 
-  // add a block
-  
-/*  if( allocptr = (char *)(find_fit(newsize)) !=NULL)
+  if( (allocptr = find_fit(newsize)) != NULL) 
   {
     place(allocptr, newsize);
     return allocptr;
   }
-
+  
+  // every time heap is used up, we extend it by CHUNKSIZE or required block size
   extendsize = MAX(newsize, CHUNKSIZE);
-  if((allocptr = (char *)(extend_heap(extendsize/WSIZE)) == NULL))
+  if((allocptr = extend_heap(extendsize/WSIZE)) == NULL)
+  {
     return NULL;
+  }
   place(allocptr, newsize);
-  return allocptr;*/
-
+  return allocptr;
 #endif
 
-// find next suitable place
-//  while(GET_ALLOC(freeptr))
-//  allocptr =(char *);  
-//  mem_sbrk is used to extend the heap
-//  we should not extend the heap normally
-//  mem_sbrk(newsize);
-// check heap rest space
-/*  while (allocptr == (void *)-1)
-  { 
-  //every time we extend the heap, we extend size two times as previous extend size
-    mem_sbrk(CHUNKSIZE>>(extend_cnt++));    
-    allocptr = mem_sbrk(newsize);
-  }
-
-    allocptr += GET_SIZE(HDPT(allocptr))
-    *(size_t *)allocptr =;
-    return (void *)((char *)p + SIZE_T_SIZE);*/
- }
+}
 
 
 /*
@@ -287,11 +523,19 @@ void mm_free(void *ptr)
 {
 
 #if IMPLICIT_LIST == 1
-  size_t size = GET_SIZE(HDRP(brk));
+  size_t size = GET_SIZE(HDRP(ptr));
 
-  PUT(HDRP(brk), PACK(size, 0));
-  PUT(FTRP(brk), PACK(size, 0));
-  coalesce(brk);
+  PUT(HDRP(ptr), PACK(size, 0));
+  PUT(FTRP(ptr), PACK(size, 0));
+  coalesce(ptr);
+#endif
+#if DEBUG == 1
+  printf("free is called\n");
+  size_t size = GET_SIZE(HDRP(ptr));
+
+  PUT(HDRP(ptr), PACK(size, 0));
+  PUT(FTRP(ptr), PACK(size, 0));
+  coalesce(ptr);
 #endif
 }
 
@@ -307,10 +551,13 @@ void *mm_realloc(void *ptr, size_t size)
   newptr = mm_malloc(size);
   if (newptr == NULL)
     return NULL;
-  copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
+  copySize = *(size_t *)((char *)oldptr - WSIZE);
+//  printf("caculated copySize = %d, while size = %d\n", copySize, size);
   if (size < copySize)
-    copySize = size;
+    copySize = size;    
+
   memcpy(newptr, oldptr, copySize);
+//  printf("finished memcpy in realloc\n from oldptr =%p to newptr = %p\n", oldptr, newptr);
   mm_free(oldptr);
   return newptr;
 }
