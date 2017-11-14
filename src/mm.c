@@ -24,9 +24,9 @@
 #define OVERHEAD  8   /* overhead of header and footer (bytes) */
 
 /* choose a mode */
-#define IMPLICIT_LIST 0
+#define IMPLICIT_LIST 1
 #define EXPLICIT_LIST 0
-#define DEBUG 1
+#define DEBUG 0
 
 #define MAX(x, y) ((x) > (y)? (x) : (y))
 
@@ -100,6 +100,7 @@ static void *coalesce(char *brk)
   size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(brk)));
   /* the size of the current block */
   size_t size = GET_SIZE(HDRP(brk));
+
   if(prev_alloc && next_alloc)
   {
     return brk;
@@ -185,17 +186,18 @@ static void *coalesce(char *brk)
   /* the size of the current block */
   size_t size = GET_SIZE(HDRP(brk));
 printf("prev_alloc=%d, next_alloc=%d\n", prev_alloc, next_alloc);
+printf("free ptr %p, current size = %d\n", brk, size);
+
   if(prev_alloc && next_alloc)
   {
-    printf("No merging happened, return brk = %p\n", brk);
     return brk;
   }
   else if(prev_alloc && !next_alloc)
   {
   /* size is total size of current and next block*/
-    size += GET_SIZE(HDRP(NEXT_BLKP(brk)));
-  /* create header and footer */
-    PUT(HDRP(brk), PACK(size, 0));
+    size += GET_SIZE(HDRP(NEXT_BLKP(brk)));    
+  /* create header and footer */  
+    PUT(HDRP(brk), PACK(size, 0));    
     PUT(FTRP(brk), PACK(size, 0));
     return (brk);
   }
@@ -205,7 +207,7 @@ printf("prev_alloc=%d, next_alloc=%d\n", prev_alloc, next_alloc);
     size += GET_SIZE(HDRP(PREV_BLKP(brk)));
     PUT(HDRP(PREV_BLKP(brk)), PACK(size, 0));
     PUT(FTRP(brk), PACK(size, 0));
-      /* return previous block ptr as the current one is merged*/
+    /* return previous block ptr as the current one is merged*/
     return (PREV_BLKP(brk));
   }
   else
@@ -257,20 +259,13 @@ static char *extend_heap(size_t words)
   size_t newsize = (words % 2) ? (words+1) * WSIZE : words * WSIZE;
   if((int)(oldbrk = mem_sbrk(newsize)) == (void*)-1 )
   {
-    printf("mem_sbrk in extend_heap failed at%p\n", oldbrk);
     return NULL;
   }
-
-  /* Initialize free block header and footer and epilogue header*/
   PUT(HDRP(oldbrk), PACK(newsize, 0));	/* the new free block header */
   PUT(FTRP(oldbrk), PACK(newsize, 0));  /* free block footer */
   PUT(HDRP(NEXT_BLKP(oldbrk)), PACK(0, 1)); /* add eqilogue */
-  printf("extended heap with old brk %p \n", oldbrk);
-
   /* coalesce if the previous block was free */
   return coalesce(oldbrk);
-
-
 #endif
 }
 
@@ -299,12 +294,10 @@ static char *find_fit(size_t newsize)
   #endif
   #if DEBUG == 1
 	char *brk;
-
 	for(brk = mem_heap_lo() + DSIZE; GET_SIZE(HDRP(brk)) > 0; brk = NEXT_BLKP(brk))
 	{
 	  if(!GET_ALLOC(HDRP(brk)) && (newsize <= GET_SIZE(HDRP(brk))))
 	    return brk;
-	  printf("Searching blocks at %p\n", brk);
 	}
 	return NULL;
   #endif
@@ -347,7 +340,7 @@ int mm_init(void)
 {
 #if DEBUG == 1
   // allocate 2 megabyte
-  allocptr = mem_sbrk(2 *(1<<20));
+  allocptr = mem_sbrk(4 *(WSIZE));
   printf("init allocptr %p\n", allocptr);
   //  max heap is 20M
   PUT(allocptr, 0);
@@ -355,11 +348,9 @@ int mm_init(void)
   PUT(allocptr+WSIZE, PACK(OVERHEAD, 1));
   PUT(allocptr+DSIZE, PACK(OVERHEAD, 1));
   allocptr += DSIZE;
-//  freeptr = allocptr; // free is not implemented
-// need implement a macro IS_FREE
   // create epilogue header
   PUT(allocptr+WSIZE, PACK(0, 1)); 
-//  extend_heap(CHUNKSIZE/WSIZE);
+  extend_heap(CHUNKSIZE/WSIZE);
   return 0;
 #endif
 #if EXPLICIT_LIST == 1
@@ -385,8 +376,6 @@ int mm_init(void)
   PUT(allocptr+WSIZE, PACK(OVERHEAD, 1));
   PUT(allocptr+DSIZE, PACK(OVERHEAD, 1));
   allocptr += DSIZE;
-// freeptr = allocptr; // free is not implemented
-// need implement a macro IS_FREE
   // create epilogue header
   PUT(allocptr+WSIZE, PACK(0, 1));  
 //  if(extend_heap(CHUNKSIZE/WSIZE) == NULL )
@@ -441,23 +430,16 @@ void *mm_malloc(size_t size)
   // do i need to extend?
   if( (allocptr = find_fit(newsize)) != NULL) 
   {
-    printf("\nfound a fit block%p\n", allocptr);
     place(allocptr, newsize);
-    printf("after place function\n");
     return allocptr;
   }
-  else 
-    printf("\n\nfind fit failed\n");
   
   // every time heap is used up, we extend it by CHUNKSIZE or required block size
   extendsize = MAX(newsize, CHUNKSIZE);
   if((allocptr = extend_heap(extendsize/WSIZE)) == NULL)
   {
-    printf("Extend heap failed\n");
     return NULL;
   }
-  printf("after extend_heap, allocptr = %p\n", allocptr);
-  printf("place a %d sized block at allocptr\n", newsize);
   place(allocptr, newsize);
   return allocptr;
 
@@ -529,13 +511,14 @@ void mm_free(void *ptr)
   PUT(FTRP(ptr), PACK(size, 0));
   coalesce(ptr);
 #endif
-#if DEBUG == 1
-  printf("free is called\n");
+#if DEBUG == 1  
+  printf("\nfree is called\n");
   size_t size = GET_SIZE(HDRP(ptr));
 
   PUT(HDRP(ptr), PACK(size, 0));
   PUT(FTRP(ptr), PACK(size, 0));
   coalesce(ptr);
+  printf("Free is finished\n");
 #endif
 }
 
